@@ -94,7 +94,8 @@ contract ThunderLoan is Initializable, OwnableUpgradeable, UUPSUpgradeable, Orac
     mapping(IERC20 => AssetToken) public s_tokenToAssetToken;
 
     // The fee in WEI, it should have 18 decimals. Each flash loan takes a flat fee of the token price.
-    uint256 private s_feePrecision;
+    // @written-audit-high storage collision
+    uint256 private s_feePrecision; // @audit-info this should be immutable
     uint256 private s_flashLoanFee; // 0.3% ETH fee
 
     mapping(IERC20 token => bool currentlyFlashLoaning) private s_currentlyFlashLoaning;
@@ -151,8 +152,12 @@ contract ThunderLoan is Initializable, OwnableUpgradeable, UUPSUpgradeable, Orac
         uint256 mintAmount = (amount * assetToken.EXCHANGE_RATE_PRECISION()) / exchangeRate;
         emit Deposit(msg.sender, token, amount);
         assetToken.mint(msg.sender, mintAmount);
+        // @written-audit-high this two lines are screwing up the exchange rate, and liquidators can't redeem their
+        // tokens. Because they are updating the exchange rate which causes that the token becomes more
+        // valuable without putting any money, so is insuficeint balance
         uint256 calculatedFee = getCalculatedFee(token, amount);
         assetToken.updateExchangeRate(calculatedFee);
+        
         token.safeTransferFrom(msg.sender, address(assetToken), amount);
     }
 
@@ -220,7 +225,10 @@ contract ThunderLoan is Initializable, OwnableUpgradeable, UUPSUpgradeable, Orac
                 )
             )
         );
-
+        // @awritten-udit-high is only checking the balance, so instead of using the repay function, we can
+        // tranfer directly the money to the contract or instead we can use the deposit function to return
+        // the money, meaning that then we can redeem the money and stole all the money we grabed from
+        // the flashloan.
         uint256 endingBalance = token.balanceOf(address(assetToken));
         if (endingBalance < startingBalance + fee) {
             revert ThunderLoan__NotPaidBack(startingBalance + fee, endingBalance);
@@ -228,6 +236,7 @@ contract ThunderLoan is Initializable, OwnableUpgradeable, UUPSUpgradeable, Orac
         s_currentlyFlashLoaning[token] = false;
     }
 
+    
     function repay(IERC20 token, uint256 amount) public {
         if (!s_currentlyFlashLoaning[token]) {
             revert ThunderLoan__NotCurrentlyFlashLoaning();
@@ -257,6 +266,11 @@ contract ThunderLoan is Initializable, OwnableUpgradeable, UUPSUpgradeable, Orac
 
     function getCalculatedFee(IERC20 token, uint256 amount) public view returns (uint256 fee) {
         //slither-disable-next-line divide-before-multiply
+        // @written-audit-high wrong fee
+        // We are getting the valueBorrowedToken in WETH using TSwap as an oracle, and then calculating
+        // the fee with that. SO we are getting the fee in weth not in the underlying token. Thats taking
+        // 0.3% fees based on the value in weth not in (USDC for instance)
+        // @written-audit-medium price oracle manipulation
         uint256 valueOfBorrowedToken = (amount * getPriceInWeth(address(token))) / s_feePrecision;
         //slither-disable-next-line divide-before-multiply
         fee = (valueOfBorrowedToken * s_flashLoanFee) / s_feePrecision;
@@ -266,6 +280,7 @@ contract ThunderLoan is Initializable, OwnableUpgradeable, UUPSUpgradeable, Orac
         if (newFee > s_feePrecision) {
             revert ThunderLoan__BadNewFee();
         }
+        // @audit should emit an event
         s_flashLoanFee = newFee;
     }
 

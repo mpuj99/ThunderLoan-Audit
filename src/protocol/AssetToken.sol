@@ -74,6 +74,11 @@ contract AssetToken is ERC20 {
     }
 
     function transferUnderlyingTo(address to, uint256 amount) external onlyThunderLoan {
+        
+        // @audit-medium (competitive normally doens't count) but what happens if the contract
+        // of the thunderloan is blacklisted in USDC contract for instance.
+        // If a user is black listed, bad
+        // IF a user is blacklisted and it effects to others, that's really bad (would count in competitive) 
         i_underlying.safeTransfer(to, amount);
     }
 
